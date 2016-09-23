@@ -24,13 +24,39 @@ const request = require('request'),
     cloudamqpConnectionString = config.get('cloudamqpConnectionString'),
     fg = new FeedGenerator();
 
-amqp.connect(cloudamqpConnectionString, (error, connection) => {
+var connection = null;
+
+// kick off connection
+function start() {
+    // connect to CloudAMQP and use/create the queue to subscribe to
+    amqp.connect(cloudamqpConnectionString, (error, amqpConn) => {
+        // error handling, restart
+        if (error) {
+            console.error('error:', error);
+            return setTimeout(start, 1000);
+        }
+        amqpConn.on('error', (error) => {
+            if (error.message !== 'amqpConn closing') {
+                console.error(error.message);
+            }
+        });
+        amqpConn.on("close", () => {
+            console.error("reconnecting");
+            return setTimeout(start, 1000);
+        });
+        console.log('connected');
+        connection = amqpConn;
+        startWorker();
+    });
+}
+
+function startWorker() {
     connection.createChannel((error, channel) => {
-        const exchangeName = 'cnn-town-crier-ref';
+        const exchangeName = config.get('exchangeName');
 
-        channel.assertExchange(exchangeName, 'topic', {durable: true});
+        channel.assertExchange(exchangeName, 'topic', { durable: true });
 
-        channel.assertQueue('cnn-google-newsstand-galleries-ref', {durable: true}, (error, queueName) => {
+        channel.assertQueue('cnn-google-newsstand-galleries-ref', { durable: true }, (error, queueName) => {
             const routingKeys = ['cnn.gallery'];
 
             routingKeys.forEach((routingKey) => {
@@ -47,70 +73,69 @@ amqp.connect(cloudamqpConnectionString, (error, connection) => {
                     fg.urls = JSON.parse(message.content.toString()).url;
                     channel.ack(message);
                 },
-                {noAck: false, exclusive: true}
+                { noAck: false, exclusive: true }
             );
         });
     });
-});
 
 
-function postToLSD(data) {
-    let endpoint = '/cnn/content/google-newsstand/galleries.xml',
-        hosts = config.get('lsdHosts');
+    function postToLSD(data) {
+        let endpoint = '/cnn/content/google-newsstand/galleries.xml',
+            hosts = config.get('lsdHosts');
 
-    debugLog('postToLSD() called');
-    // debugLog(data);
+        debugLog('postToLSD() called');
+        // debugLog(data);
 
-    hosts.split(',').forEach((host) => {
-        request.post({
-            url: `http://${host}${endpoint}`,
-            body: data,
-            headers: {'Content-Type': 'application/rss+xml'}
-        },
-        (error/* , response, body*/) => {
-            if (error) {
-                debugLog(error.stack);
-            } else {
-                debugLog(`Successfully uploaded data to ${hosts} at ${endpoint}`);
-                // debugLog(body);
-            }
-        });
-    });
-}
-
-
-
-setInterval(() => {
-    debugLog('Generate Feed interval fired');
-
-    // for bypassing the rabbit queue to test content
-    // fg.urls = [
-    //     'http://www.cnn.com/2016/06/26/arts/gallery/alexa-meade-breathing-art/index.html',
-    //     'http://www.cnn.com/2016/07/18/travel/gallery/new-unesco-world-heritage-sites-2016/index.html',
-    //
-    // ];
-
-    debugLog(fg.urls);
-
-    if (fg.urls && fg.urls.length > 0) {
-        fg.processContent().then(
-            // success
-            (rssFeed) => {
-                console.log(rssFeed);
-
-                postToLSD(rssFeed);
-
-                // post to LSD endpoint
-                fg.urls = 'clear';
-                debugLog(fg.urls);
+        hosts.split(',').forEach((host) => {
+            request.post({
+                url: `http://${host}${endpoint}`,
+                body: data,
+                headers: { 'Content-Type': 'application/rss+xml' }
             },
-
-            // failure
-            (error) => {
-                console.log(error);
-            }
-        );
-    } else {
-        debugLog('no updates');
+                (error/* , response, body*/) => {
+                    if (error) {
+                        debugLog(error.stack);
+                    } else {
+                        debugLog(`Successfully uploaded data to ${hosts} at ${endpoint}`);
+                        // debugLog(body);
+                    }
+                });
+        });
     }
-}, config.get('gnsTaskIntervalMS'));
+
+
+
+    setInterval(() => {
+        debugLog('Generate Feed interval fired');
+
+        // for bypassing the rabbit queue to test content
+        // fg.urls = [
+        //     'http://www.cnn.com/2016/06/26/arts/gallery/alexa-meade-breathing-art/index.html',
+        //     'http://www.cnn.com/2016/07/18/travel/gallery/new-unesco-world-heritage-sites-2016/index.html',
+        //
+        // ];
+
+        debugLog(fg.urls);
+
+        if (fg.urls && fg.urls.length > 0) {
+            fg.processContent().then(
+                // success
+                (rssFeed) => {
+                    console.log(rssFeed);
+
+                    postToLSD(rssFeed);
+
+                    // post to LSD endpoint
+                    fg.urls = 'clear';
+                    debugLog(fg.urls);
+                },
+
+                // failure
+                (error) => {
+                    console.log(error);
+                }
+            );
+        } else {
+            debugLog('no updates');
+        }
+    }, config.get('gnsTaskIntervalMS'));
