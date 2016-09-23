@@ -31,7 +31,7 @@ const  request = require('request'),
     debugLog = require('debug')('cnn-google-newsstand:Task:generate-static-feed'),
     config = require('../config.js'),
     fg = new FeedGenerator(),
-    POST_TO_LSD = true; // <---- TODO - SET THIS TO THE PROPER VALUE BASED ON WHAT YOU ARE WANTING TO DO
+    POST_TO_LSD = false; // <---- TODO - SET THIS TO THE PROPER VALUE BASED ON WHAT YOU ARE WANTING TO DO
 
 
 

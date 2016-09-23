@@ -32,15 +32,47 @@ const request = require('request'),
     worldFG = new FeedGenerator();
 
 
+    var connection = null;
 
-// connect to CloudAMQP and use/create the queue to subscribe to
-amqp.connect(cloudamqpConnectionString, (error, connection) => {
+// kick off connection
+function start() {
+    // connect to CloudAMQP and use/create the queue to subscribe to
+    amqp.connect(cloudamqpConnectionString, (error, amqpConn) => {
+        // error handling, restart
+        if (error) {
+            console.error('error:', error);
+            return setTimeout(start, 1000);
+        }
+        amqpConn.on('error', (error) => {
+            if (error.message !== 'amqpConn closing') {
+                console.error(error.message);
+            }
+        });
+        amqpConn.on("close", () => {
+        console.error("reconnecting");
+        return setTimeout(start, 1000);
+        });
+        console.log('connected');
+        connection = amqpConn;
+        startWorker();
+    });
+}
+
+function startWorker() {
     connection.createChannel((error, channel) => {
+        if (closeOnErr(error)) return;
+        channel.on('error', (error) => {
+            console.error('channel error', error.message);
+        });
+        channel.on('close', () => {
+            console.log('channel closed');
+        });
+
         const exchangeName = config.get('exchangeName');
 
-        channel.assertExchange(exchangeName, 'topic', {durable: true});
+        channel.assertExchange(exchangeName, 'topic', { durable: true });
 
-        channel.assertQueue(config.get('queueNameArticles'), {durable: true}, (error, queueName) => {
+        channel.assertQueue(config.get('queueNameArticles'), { durable: true }, (error, queueName) => {
             const routingKeys = config.get('routingKeysArticles');
 
             routingKeys.forEach((routingKey) => {
@@ -111,9 +143,97 @@ amqp.connect(cloudamqpConnectionString, (error, connection) => {
             );
         });
     });
-});
+}
 
+// kickoff
+start();
 
+// connect to CloudAMQP and use/create the queue to subscribe to
+// amqp.connect(cloudamqpConnectionString, (error, connection) => {
+//     connection.createChannel((error, channel) => {
+//         const exchangeName = config.get('exchangeName');
+
+//         channel.assertExchange(exchangeName, 'topic', {durable: true});
+
+//         channel.assertQueue(config.get('queueNameArticles'), {durable: true}, (error, queueName) => {
+//             const routingKeys = config.get('routingKeysArticles');
+
+//             routingKeys.forEach((routingKey) => {
+//                 channel.bindQueue(queueName.queue, exchangeName, routingKey);
+//             });
+
+//             channel.prefetch(1);
+
+//             channel.consume(
+//                 queueName.queue,
+//                 (message) => {
+//                     let mappedToASection = false;
+
+//                     debugLog(`AMQP Message: ${message.fields.routingKey}: ${message.content.toString()}`);
+//                     debugLog(`Adding url to latest feed: ${JSON.parse(message.content.toString()).url}`);
+//                     latestFG.urls = JSON.parse(message.content.toString()).url;
+
+//                     if (/\/entertainment\//.test(JSON.parse(message.content.toString()).url)) {
+//                         debugLog(`Adding url to entertainment feed: ${JSON.parse(message.content.toString()).url}`);
+//                         entertainmentFG.urls = JSON.parse(message.content.toString()).url;
+//                         mappedToASection = true;
+//                     }
+
+//                     if (/\/politics\//.test(JSON.parse(message.content.toString()).url)) {
+//                         debugLog(`Adding url to politics feed: ${JSON.parse(message.content.toString()).url}`);
+//                         politicsFG.urls = JSON.parse(message.content.toString()).url;
+//                         mappedToASection = true;
+//                     }
+
+//                     if (/\/health\//.test(JSON.parse(message.content.toString()).url)) {
+//                         debugLog(`Adding url to health feed: ${JSON.parse(message.content.toString()).url}`);
+//                         healthFG.urls = JSON.parse(message.content.toString()).url;
+//                         mappedToASection = true;
+//                     }
+
+//                     if (/\/opinions|opinion\//.test(JSON.parse(message.content.toString()).url)) {
+//                         debugLog(`Adding url to opinions feed: ${JSON.parse(message.content.toString()).url}`);
+//                         opinionsFG.urls = JSON.parse(message.content.toString()).url;
+//                         mappedToASection = true;
+//                     }
+
+//                     if (/\/tech\//.test(JSON.parse(message.content.toString()).url)) {
+//                         debugLog(`Adding url to tech feed: ${JSON.parse(message.content.toString()).url}`);
+//                         techFG.urls = JSON.parse(message.content.toString()).url;
+//                         mappedToASection = true;
+//                     }
+
+//                     if (/\/us|crime|justice\//.test(JSON.parse(message.content.toString()).url)) {
+//                         debugLog(`Adding url to us feed: ${JSON.parse(message.content.toString()).url}`);
+//                         usFG.urls = JSON.parse(message.content.toString()).url;
+//                         mappedToASection = true;
+//                     }
+
+//                     if (/\/world\//.test(JSON.parse(message.content.toString()).url)) {
+//                         debugLog(`Adding url to world feed: ${JSON.parse(message.content.toString()).url}`);
+//                         worldFG.urls = JSON.parse(message.content.toString()).url;
+//                         mappedToASection = true;
+//                     }
+
+//                     if (!mappedToASection) {
+//                         debugLog(`${JSON.parse(message.content.toString()).url} - DEFAULTING to world feed`);
+//                         worldFG.urls = JSON.parse(message.content.toString()).url;
+//                     }
+
+//                     channel.ack(message);
+//                 },
+//                 {noAck: false, exclusive: true}
+//             );
+//         });
+//     });
+// });
+
+function closeOnErr(error) {
+    if (!error) return false;
+    console.error('error', error);
+    connection.close();
+    return true;
+}
 
 function postToLSD(data, feedName) {
     let endpoint = `/cnn/content/google-newsstand/${feedName}.xml`,
@@ -139,29 +259,49 @@ function postToLSD(data, feedName) {
     });
 }
 
+function fgProcessContent(fg) {
+    fg.processContent().then(
+        // success
+        (rssFeed) => {
+            console.log(rssFeed);
+
+            // postToLSD(rssFeed, 'latest');
+
+            // post to LSD endpoint
+            latestFG.urls = 'clear';
+            debugLog(latestFG.urls);
+        },
+
+        // failure
+        (error) => {
+            console.log(error);
+        }
+    );
+}
 
 // brute force.  This is not the final solution, but it works just fine
 setInterval(() => {
     debugLog('Generate latest Feed interval fired');
 
     if (latestFG.urls && latestFG.urls.length > 0) {
-        latestFG.processContent().then(
-            // success
-            (rssFeed) => {
-                console.log(rssFeed);
+        fgProcessContent(latestFG);
+        // latestFG.processContent().then(
+        //     // success
+        //     (rssFeed) => {
+        //         console.log(rssFeed);
 
-                postToLSD(rssFeed, 'latest');
+        //         postToLSD(rssFeed, 'latest');
 
-                // post to LSD endpoint
-                latestFG.urls = 'clear';
-                debugLog(latestFG.urls);
-            },
+        //         // post to LSD endpoint
+        //         latestFG.urls = 'clear';
+        //         debugLog(latestFG.urls);
+        //     },
 
-            // failure
-            (error) => {
-                console.log(error);
-            }
-        );
+        //     // failure
+        //     (error) => {
+        //         console.log(error);
+        //     }
+        // );
     } else {
         debugLog('no updates');
     }
@@ -171,23 +311,24 @@ setInterval(() => {
     debugLog('Generate entertainment Feed interval fired');
 
     if (entertainmentFG.urls && entertainmentFG.urls.length > 0) {
-        entertainmentFG.processContent().then(
-            // success
-            (rssFeed) => {
-                console.log(rssFeed);
+        fgProcessContent(entertainmentFG);
+        // entertainmentFG.processContent().then(
+        //     // success
+        //     (rssFeed) => {
+        //         console.log(rssFeed);
 
-                postToLSD(rssFeed, 'entertainment');
+        //         postToLSD(rssFeed, 'entertainment');
 
-                // post to LSD endpoint
-                entertainmentFG.urls = 'clear';
-                debugLog(entertainmentFG.urls);
-            },
+        //         // post to LSD endpoint
+        //         entertainmentFG.urls = 'clear';
+        //         debugLog(entertainmentFG.urls);
+        //     },
 
-            // failure
-            (error) => {
-                console.log(error);
-            }
-        );
+        //     // failure
+        //     (error) => {
+        //         console.log(error);
+        //     }
+        // );
     } else {
         debugLog('no updates');
     }
@@ -197,23 +338,24 @@ setInterval(() => {
     debugLog('Generate health Feed interval fired');
 
     if (healthFG.urls && healthFG.urls.length > 0) {
-        healthFG.processContent().then(
-            // success
-            (rssFeed) => {
-                console.log(rssFeed);
+        fgProcessContent(healthFG);
+        // healthFG.processContent().then(
+        //     // success
+        //     (rssFeed) => {
+        //         console.log(rssFeed);
 
-                postToLSD(rssFeed, 'health');
+        //         postToLSD(rssFeed, 'health');
 
-                // post to LSD endpoint
-                healthFG.urls = 'clear';
-                debugLog(healthFG.urls);
-            },
+        //         // post to LSD endpoint
+        //         healthFG.urls = 'clear';
+        //         debugLog(healthFG.urls);
+        //     },
 
-            // failure
-            (error) => {
-                console.log(error);
-            }
-        );
+        //     // failure
+        //     (error) => {
+        //         console.log(error);
+        //     }
+        // );
     } else {
         debugLog('no updates');
     }
@@ -223,23 +365,25 @@ setInterval(() => {
     debugLog('Generate opinions Feed interval fired');
 
     if (opinionsFG.urls && opinionsFG.urls.length > 0) {
-        opinionsFG.processContent().then(
-            // success
-            (rssFeed) => {
-                console.log(rssFeed);
+        fgProcessContent(opinionsFG);
+        
+        // opinionsFG.processContent().then(
+        //     // success
+        //     (rssFeed) => {
+        //         console.log(rssFeed);
 
-                postToLSD(rssFeed, 'opinions');
+        //         postToLSD(rssFeed, 'opinions');
 
-                // post to LSD endpoint
-                opinionsFG.urls = 'clear';
-                debugLog(opinionsFG.urls);
-            },
+        //         // post to LSD endpoint
+        //         opinionsFG.urls = 'clear';
+        //         debugLog(opinionsFG.urls);
+        //     },
 
-            // failure
-            (error) => {
-                console.log(error);
-            }
-        );
+        //     // failure
+        //     (error) => {
+        //         console.log(error);
+        //     }
+        // );
     } else {
         debugLog('no updates');
     }
@@ -249,23 +393,24 @@ setInterval(() => {
     debugLog('Generate politics Feed interval fired');
 
     if (politicsFG.urls && politicsFG.urls.length > 0) {
-        politicsFG.processContent().then(
-            // success
-            (rssFeed) => {
-                console.log(rssFeed);
+        fgProcessContent(politicsFG);
+        // politicsFG.processContent().then(
+        //     // success
+        //     (rssFeed) => {
+        //         console.log(rssFeed);
 
-                postToLSD(rssFeed, 'politics');
+        //         postToLSD(rssFeed, 'politics');
 
-                // post to LSD endpoint
-                politicsFG.urls = 'clear';
-                debugLog(politicsFG.urls);
-            },
+        //         // post to LSD endpoint
+        //         politicsFG.urls = 'clear';
+        //         debugLog(politicsFG.urls);
+        //     },
 
-            // failure
-            (error) => {
-                console.log(error);
-            }
-        );
+        //     // failure
+        //     (error) => {
+        //         console.log(error);
+        //     }
+        // );
     } else {
         debugLog('no updates');
     }
@@ -275,23 +420,24 @@ setInterval(() => {
     debugLog('Generate tech Feed interval fired');
 
     if (techFG.urls && techFG.urls.length > 0) {
-        techFG.processContent().then(
-            // success
-            (rssFeed) => {
-                console.log(rssFeed);
+        fgProcessContent(techFG);
+        // techFG.processContent().then(
+        //     // success
+        //     (rssFeed) => {
+        //         console.log(rssFeed);
 
-                postToLSD(rssFeed, 'tech');
+        //         postToLSD(rssFeed, 'tech');
 
-                // post to LSD endpoint
-                techFG.urls = 'clear';
-                debugLog(latestFG.urls);
-            },
+        //         // post to LSD endpoint
+        //         techFG.urls = 'clear';
+        //         debugLog(latestFG.urls);
+        //     },
 
-            // failure
-            (error) => {
-                console.log(error);
-            }
-        );
+        //     // failure
+        //     (error) => {
+        //         console.log(error);
+        //     }
+        // );
     } else {
         debugLog('no updates');
     }
@@ -301,23 +447,24 @@ setInterval(() => {
     debugLog('Generate us Feed interval fired');
 
     if (usFG.urls && usFG.urls.length > 0) {
-        usFG.processContent().then(
-            // success
-            (rssFeed) => {
-                console.log(rssFeed);
+       fgProcessContent(usFG);
+        // usFG.processContent().then(
+        //     // success
+        //     (rssFeed) => {
+        //         console.log(rssFeed);
 
-                postToLSD(rssFeed, 'us');
+        //         postToLSD(rssFeed, 'us');
 
-                // post to LSD endpoint
-                usFG.urls = 'clear';
-                debugLog(usFG.urls);
-            },
+        //         // post to LSD endpoint
+        //         usFG.urls = 'clear';
+        //         debugLog(usFG.urls);
+        //     },
 
-            // failure
-            (error) => {
-                console.log(error);
-            }
-        );
+        //     // failure
+        //     (error) => {
+        //         console.log(error);
+        //     }
+        // );
     } else {
         debugLog('no updates');
     }
@@ -327,23 +474,24 @@ setInterval(() => {
     debugLog('Generate world Feed interval fired');
 
     if (worldFG.urls && worldFG.urls.length > 0) {
-        worldFG.processContent().then(
-            // success
-            (rssFeed) => {
-                console.log(rssFeed);
+        fgProcessContent(worldFG);
+        // worldFG.processContent().then(
+        //     // success
+        //     (rssFeed) => {
+        //         console.log(rssFeed);
 
-                postToLSD(rssFeed, 'world');
+        //         postToLSD(rssFeed, 'world');
 
-                // post to LSD endpoint
-                worldFG.urls = 'clear';
-                debugLog(worldFG.urls);
-            },
+        //         // post to LSD endpoint
+        //         worldFG.urls = 'clear';
+        //         debugLog(worldFG.urls);
+        //     },
 
-            // failure
-            (error) => {
-                console.log(error);
-            }
-        );
+        //     // failure
+        //     (error) => {
+        //         console.log(error);
+        //     }
+        // );
     } else {
         debugLog('no updates');
     }

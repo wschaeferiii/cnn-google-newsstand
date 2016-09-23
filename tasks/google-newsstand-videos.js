@@ -24,16 +24,49 @@ const request = require('request'),
     cloudamqpConnectionString = config.get('cloudamqpConnectionString'),
     fg = new FeedGenerator();
 
+var connection = null;
 
 
-// connect to CloudAMQP and use/create teh queue to subscribe to
-amqp.connect(cloudamqpConnectionString, (error, connection) => {
+// connect to CloudAMQP
+function start() {
+    // connect to CloudAMQP and use/create the queue to subscribe to
+    amqp.connect(cloudamqpConnectionString, (error, amqpConn) => {
+        // error handling, restart
+        if (error) {
+            console.error('error:', error);
+            return setTimeout(start, 1000);
+        }
+        amqpConn.on('error', (error) => {
+            if (error.message !== 'amqpConn closing') {
+                console.error(error.message);
+            }
+        });
+        amqpConn.on("close", () => {
+            console.error("reconnecting");
+            return setTimeout(start, 1000);
+        });
+        console.log('connected');
+        connection = amqpConn;
+        startWorker();
+    });
+}
+
+// use/create the queue to subscribe to
+function startWorker() {
     connection.createChannel((error, channel) => {
+        if (closeOnErr(error)) return;
+        channel.on('error', (error) => {
+            console.error('channel error', error.message);
+        });
+        channel.on('close', () => {
+            console.log('channel closed');
+        });
+
         const exchangeName = config.get('exchangeName');
 
-        channel.assertExchange(exchangeName, 'topic', {durable: true});
+        channel.assertExchange(exchangeName, 'topic', { durable: true });
 
-        channel.assertQueue(config.get('queueNameVideos'), {durable: true}, (error, queueName) => {
+        channel.assertQueue(config.get('queueNameVideos'), { durable: true }, (error, queueName) => {
             const routingKeys = config.get('routingKeysVideos');
 
             routingKeys.forEach((routingKey) => {
@@ -50,13 +83,21 @@ amqp.connect(cloudamqpConnectionString, (error, connection) => {
                     fg.urls = JSON.parse(message.content.toString()).url;
                     channel.ack(message);
                 },
-                {noAck: false, exclusive: true}
+                { noAck: false, exclusive: true }
             );
         });
     });
-});
+};
 
+// kickoff
+start()
 
+function closeOnErr(error) {
+    if (!error) return false;
+    console.error('error', error);
+    connection.close();
+    return true;
+}
 
 function postToLSD(data) {
     let endpoint = '/cnn/content/google-newsstand/videos.xml',
@@ -69,16 +110,16 @@ function postToLSD(data) {
         request.post({
             url: `http://${host}${endpoint}`,
             body: data,
-            headers: {'Content-Type': 'application/rss+xml'}
+            headers: { 'Content-Type': 'application/rss+xml' }
         },
-        (error/* , response, body*/) => {
-            if (error) {
-                debugLog(error.stack);
-            } else {
-                debugLog(`Successfully uploaded data to ${hosts} at ${endpoint}`);
-                // debugLog(body);
-            }
-        });
+            (error/* , response, body*/) => {
+                if (error) {
+                    debugLog(error.stack);
+                } else {
+                    debugLog(`Successfully uploaded data to ${hosts} at ${endpoint}`);
+                    // debugLog(body);
+                }
+            });
     });
 }
 
@@ -94,7 +135,7 @@ setInterval(() => {
             (rssFeed) => {
                 console.log(rssFeed);
 
-                postToLSD(rssFeed);
+                // postToLSD(rssFeed);
 
                 // post to LSD endpoint
                 fg.urls = 'clear';
