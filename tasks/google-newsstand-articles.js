@@ -265,7 +265,7 @@ function fgProcessContent(fg) {
         (rssFeed) => {
             console.log(rssFeed);
 
-            // postToLSD(rssFeed, 'latest');
+            postToLSD(rssFeed, 'latest');
 
             // post to LSD endpoint
             latestFG.urls = 'clear';

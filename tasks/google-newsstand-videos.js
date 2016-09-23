@@ -135,7 +135,7 @@ setInterval(() => {
             (rssFeed) => {
                 console.log(rssFeed);
 
-                // postToLSD(rssFeed);
+                postToLSD(rssFeed);
 
                 // post to LSD endpoint
                 fg.urls = 'clear';
